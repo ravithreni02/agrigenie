@@ -57,13 +57,15 @@ CROP_TO_APY_NAME = {
     "mungbean": "Moong(Green Gram)", "blackgram": "Urad", "lentil": "Masoor",
     "banana": "Banana", "coconut": "Coconut", "cotton": "Cotton(lint)",
     "jute": "Jute",
-    # everything else (apple, coffee, grapes, kidneybeans, mango, muskmelon,
-    # orange, papaya, pomegranate, watermelon) has NO match in the APY
-    # dataset and is intentionally left unmapped -- see NO_REGIONAL_DATA.
+    # newly verified against the district-level dataset + state horticulture data:
+    "apple": "Apple", "mango": "Mango", "grapes": "Grapes",
+    "orange": "Orange", "papaya": "Papaya", "pomegranate": "Pomegranate",
 }
+
+# coffee, kidneybeans, muskmelon, watermelon genuinely still have no reliable
+# state-level production record in either source, so they stay honest ("unverifiable")
 NO_REGIONAL_DATA = {
-    "apple", "coffee", "grapes", "kidneybeans", "mango",
-    "muskmelon", "orange", "papaya", "pomegranate", "watermelon",
+    "coffee", "kidneybeans", "muskmelon", "watermelon",
 }
 
 @st.cache_resource
