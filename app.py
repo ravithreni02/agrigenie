@@ -37,27 +37,65 @@ SHAP_NARRATIVE_RULES = {
 }
 FEATURES = ["N", "P", "K", "temperature", "humidity", "ph", "rainfall"]
 
+# ---------------------------------------------------------------------------
+# FIX #1: crop-label -> government-dataset-name mapping.
+# Every value here was checked against the ACTUAL unique Crop values in
+# India_Agriculture_Crop_Production.csv (not assumed/typed from memory like
+# before -- "Pome Granet", "Blackgram", "Moong", "Lentil", "Coconut " with a
+# trailing space were all silently wrong and made those crops fail the
+# regional-growth check in EVERY state, always).
+#
+# Crops in NO_REGIONAL_DATA genuinely do not appear anywhere in India's
+# APY (Area-Production-Yield) statistics -- that dataset only tracks
+# foodgrains/major commercial crops, not fruits, and not coffee. For these
+# we cannot verify "is this grown here" from government production data at
+# all, so we say that explicitly instead of silently guessing True or False.
+# ---------------------------------------------------------------------------
+CROP_TO_APY_NAME = {
+    "rice": "Rice", "maize": "Maize", "chickpea": "Gram",
+    "pigeonpeas": "Arhar/Tur", "mothbeans": "Moth",
+    "mungbean": "Moong(Green Gram)", "blackgram": "Urad", "lentil": "Masoor",
+    "banana": "Banana", "coconut": "Coconut", "cotton": "Cotton(lint)",
+    "jute": "Jute",
+    # everything else (apple, coffee, grapes, kidneybeans, mango, muskmelon,
+    # orange, papaya, pomegranate, watermelon) has NO match in the APY
+    # dataset and is intentionally left unmapped -- see NO_REGIONAL_DATA.
+}
+NO_REGIONAL_DATA = {
+    "apple", "coffee", "grapes", "kidneybeans", "mango",
+    "muskmelon", "orange", "papaya", "pomegranate", "watermelon",
+}
+
 @st.cache_resource
 def load_agri_assets():
     model = joblib.load("best_model_RandomForest.joblib")
     scaler = joblib.load("scaler.joblib")
     le = joblib.load("label_encoder.joblib")
-    bench_df = pd.read_csv("crop_benchmarks_MASTER.csv")
+    # FIX #2: use the state-aware benchmark table (see build_state_benchmarks.py)
+    # instead of one national-average row per crop. Falls back gracefully if
+    # you haven't generated it yet, so the app never hard-crashes.
+    try:
+        bench_df = pd.read_csv("crop_benchmarks_STATE.csv")
+        state_aware = True
+    except FileNotFoundError:
+        bench_df = pd.read_csv("crop_benchmarks_MASTER.csv")
+        bench_df["state"] = None
+        bench_df["data_confidence"] = "national"
+        state_aware = False
     soil_master_df = pd.read_csv("regional_soil_MASTER.csv")
     coords_df = pd.read_csv("district_coords_MASTER.csv")
     coords_df["District"] = coords_df["District"].str.strip().str.lower()
     district_coords = {row["District"]: (row["Latitude"], row["Longitude"]) for _, row in coords_df.iterrows()}
     data_set = pd.read_csv("data_set.csv")
-    grown_ok = data_set[(data_set["Area"] > 0) & (data_set["Production" ] > 0)]
-    grown_in_state = set(zip(grown_ok["State"].str.upper().str.strip(), grown_ok["Crop"].str.strip())) # Corrected 'STATES' to 'State'
-    dataset_map_reverse = {"rice": "Rice", "maize": "Maize", "chickpea": "Gram", "kidneybeans": "Rajmash Kholar", "pigeonpeas": "Arhar/Tur", "mothbeans": "Moth", "mungbean": "Moong", "blackgram": "Blackgram", "lentil": "Lentil", "pomegranate": "Pome Granet", "banana": "Banana", "mango": "Mango", "grapes": "Grapes", "watermelon": "Water Melon", "orange": "Orange", "papaya": "Papaya", "coconut": "Coconut ", "cotton": "Cotton(lint)", "jute": "Jute", "coffee": "Coffee"}
+    grown_ok = data_set[(data_set["Area"] > 0) & (data_set["Production"] > 0)]
+    grown_in_state = set(zip(grown_ok["State"].str.upper().str.strip(), grown_ok["Crop"].str.strip()))
     training_url = "https://raw.githubusercontent.com/AbhishekKandoi/Crop-Yield-Prediction-based-on-Indian-Agriculture/main/Crop%20Recommendation%20dataset.csv"
     training_df = pd.read_csv(training_url)
     training_bounds = {col: (float(training_df[col].min()), float(training_df[col].max())) for col in FEATURES}
-    return model, scaler, le, bench_df, soil_master_df, district_coords, training_bounds, grown_in_state, dataset_map_reverse
+    return model, scaler, le, bench_df, soil_master_df, district_coords, training_bounds, grown_in_state, state_aware
 
 try:
-    best_model, scaler, le, bench_df, soil_master_df, district_coords, training_bounds, grown_in_state, dataset_map_reverse = load_agri_assets()
+    best_model, scaler, le, bench_df, soil_master_df, district_coords, training_bounds, grown_in_state, state_aware = load_agri_assets()
     shap_explainer = shap.TreeExplainer(best_model)
 except Exception as e:
     st.error(f"⚠️ Missing assets! {e}")
@@ -103,13 +141,21 @@ def clip_to_training_range(feature_name, value):
     lo, hi = training_bounds[feature_name]
     return float(np.clip(value, lo, hi))
 
-def is_realistically_grown(state, crop_label):
-    ds_crop_name = dataset_map_reverse.get(crop_label)
-    if ds_crop_name is None: return True
-    # Production code fix: Normalize 'And' to '&' for Jammu
-    lookup_state = state.upper().strip().replace(' AND ', ' & ')
-    lookup_state = "ORISSA" if lookup_state == "ODISHA" else lookup_state
-    return (lookup_state, ds_crop_name) in grown_in_state
+def check_regional_growth(state, crop_label):
+    """
+    Returns one of: "grown", "not_grown", "unverifiable".
+    FIX #3: no more '.replace(" AND "," & ")' or 'ODISHA'->'ORISSA' hacks --
+    those were silently breaking the match for Jammu and Kashmir AND Odisha
+    (the real dataset already spells them "Jammu and Kashmir" / "Odisha").
+    Verified directly against India_Agriculture_Crop_Production.csv.
+    """
+    if crop_label in NO_REGIONAL_DATA:
+        return "unverifiable"
+    apy_name = CROP_TO_APY_NAME.get(crop_label)
+    if apy_name is None:
+        return "unverifiable"
+    lookup_state = state.upper().strip()
+    return "grown" if (lookup_state, apy_name) in grown_in_state else "not_grown"
 
 def multi_objective_recommend(state, district, N=None, P=None, K=None, ph=None, top_n=5, w_confidence=0.5, w_yield=0.05, w_water=0.4, w_profit=0.05):
     state_data = SOIL_PROFILE_DB.get(state, SOIL_PROFILE_DB["default"])
@@ -122,7 +168,12 @@ def multi_objective_recommend(state, district, N=None, P=None, K=None, ph=None, 
     c_idx = np.argsort(probs)[::-1][:12]
     cands, confs = le.inverse_transform(c_idx), probs[c_idx]
 
-    mask = confs >= 5.0 # Lowered from 10 to catch low-confidence staple possibilities
+    # Keep the raw #1 model pick around even if it later gets excluded --
+    # this is what surfaces the "coffee at 61% in Bihar" situation instead
+    # of hiding it, which matters for an XAI paper.
+    raw_top_crop, raw_top_conf = cands[0], confs[0]
+
+    mask = confs >= 5.0
     if mask.sum() == 0: mask[:3] = True
     cands, confs = cands[mask], confs[mask]
 
@@ -131,17 +182,28 @@ def multi_objective_recommend(state, district, N=None, P=None, K=None, ph=None, 
 
     rows = []
     for c, cf in zip(cands, confs):
-        b_row = bench_df[bench_df["label" ] == c].iloc[0]
+        b_rows = bench_df[(bench_df["label"] == c) & ((bench_df["state"] == state) | bench_df["state"].isna())]
+        # prefer the state-specific row if present, else the national-fallback row for this crop
+        b_row = b_rows[b_rows["state"] == state]
+        b_row = b_row.iloc[0] if not b_row.empty else bench_df[bench_df["label"] == c].iloc[0]
+
         yf = np.clip(1.1 - (abs(clim["temperature"] - b_row["ideal_temp_c"]) / max(b_row["ideal_temp_c"], 1) + abs(clim["rainfall_37d_actual"] - b_row["ideal_rainfall_mm"]) / max(b_row["ideal_rainfall_mm"], 1)) / 2.0, 0.6, 1.1)
         est_y = b_row["avg_yield_t_ha"] * yf
         irr = max(b_row["water_req_mm"] - clim["rainfall_37d_actual"], 0)
         prof = (est_y * 1000 * b_row["price_per_kg_inr"]) - b_row["cost_cultivation_inr_ha"]
         s_row = get_shap(le.transform([c])[0]); d_idx = int(np.argmax(np.abs(s_row))); d_feat = FEATURES[d_idx]
         expl = SHAP_NARRATIVE_RULES[d_feat]["positive" if s_row[d_idx] >= 0 else "negative"]
-        rows.append({"crop": c, "classifier_confidence": round(cf, 2), "estimated_yield_t_ha": round(est_y, 2), "water_requirement_mm": b_row["water_req_mm"], "irrigation_needed_mm": round(irr, 1), "estimated_profit_inr_ha": round(prof, 0), "dominant_driver": f"{d_feat}", "xai_explanation": expl})
+        growth_status = check_regional_growth(state, c)
+        rows.append({
+            "crop": c, "classifier_confidence": round(cf, 2), "estimated_yield_t_ha": round(est_y, 2),
+            "water_requirement_mm": b_row["water_req_mm"], "irrigation_needed_mm": round(irr, 1),
+            "estimated_profit_inr_ha": round(prof, 0), "dominant_driver": f"{d_feat}", "xai_explanation": expl,
+            "growth_status": growth_status,
+            "data_confidence": b_row.get("data_confidence", "national"),
+        })
 
     res = pd.DataFrame(rows)
-    if res.empty: return res, soil, (N is None), clim, False
+    if res.empty: return res, soil, (N is None), clim, {"raw_top_crop": raw_top_crop, "raw_top_conf": raw_top_conf, "suppressed": False}
 
     total_w = w_confidence + w_yield + w_water + w_profit
     w_c, w_y, w_wa, w_p = w_confidence/total_w, w_yield/total_w, w_water/total_w, w_profit/total_w
@@ -151,14 +213,32 @@ def multi_objective_recommend(state, district, N=None, P=None, K=None, ph=None, 
     res["s_water"] = 1 - (res["irrigation_needed_mm"] / bench_df["water_req_mm"].max())
     res["s_profit"] = np.log1p(res["estimated_profit_inr_ha"].clip(lower=0)) / np.log1p((bench_df["avg_yield_t_ha"] * 1000 * bench_df["price_per_kg_inr"]).max())
     if clim["risk"] != "low": res["s_water"] *= (0.7 if clim["risk"] == "moderate" else 0.4)
-    res["multi_objective_score"] = (w_c * res["s_conf" ] + w_y * res["s_yield"] + w_wa * res["s_water"] + w_p * res["s_profit"]).round(4)
+    res["multi_objective_score"] = (w_c * res["s_conf"] + w_y * res["s_yield"] + w_wa * res["s_water"] + w_p * res["s_profit"]).round(4)
 
-    res["regionally_grown"] = res["crop"].apply(lambda c: is_realistically_grown(state, c))
-    warn_flag = False
-    if res["regionally_grown"].any(): res = res[res["regionally_grown"]].copy()
-    else: warn_flag = True
+    # FIX #4: only hard-filter out crops we could ACTUALLY verify as not
+    # grown here. Crops we simply have no data for ("unverifiable") stay in
+    # the pool but are labeled as such in the UI -- never silently dropped,
+    # never silently trusted either.
+    before = res.copy()
+    verified_pool = res[res["growth_status"] != "not_grown"].copy()
+    if verified_pool.empty:
+        # every single candidate failed verification -- fall back to the
+        # unfiltered pool but make the reason explicit (not "theoretical
+        # climate", which was the wrong message before).
+        final = before
+        no_verified_crops = True
+    else:
+        final = verified_pool
+        no_verified_crops = False
 
-    return res.sort_values("multi_objective_score", ascending=False).head(top_n).reset_index(drop=True), soil, (N is None), clim, warn_flag
+    final = final.sort_values("multi_objective_score", ascending=False).head(top_n).reset_index(drop=True)
+
+    meta = {
+        "raw_top_crop": raw_top_crop, "raw_top_conf": round(float(raw_top_conf), 2),
+        "suppressed": raw_top_crop not in final["crop"].values,
+        "no_verified_crops": no_verified_crops,
+    }
+    return final, soil, (N is None), clim, meta
 
 # --- Sidebar UI ---
 st.sidebar.header("📍 Location")
@@ -172,12 +252,18 @@ w_wa = st.sidebar.slider("Water", 0.0, 1.0, 0.3)
 w_p = st.sidebar.slider("Profit", 0.0, 1.0, 0.15)
 
 if st.sidebar.button("🌾 Recommend", type="primary", use_container_width=True):
-    res, soil, fb, clim, reg_warn = multi_objective_recommend(sel_state, sel_dist, w_confidence=w_c, w_yield=w_y, w_water=w_wa, w_profit=w_p)
+    res, soil, fb, clim, meta = multi_objective_recommend(sel_state, sel_dist, w_confidence=w_c, w_yield=w_y, w_water=w_wa, w_profit=w_p)
     if fb: st.info(f"📋 Fallback soil for {sel_dist}: N={soil['N']}, P={soil['P']}, K={soil['K']}, pH={soil['ph']}")
     st.info(f"🌦️ Live Climate: {clim['temperature']}°C, {clim['rainfall_37d_actual']}mm rain. Status: {clim['category']}.")
-    if reg_warn: st.warning("⚠️ Theoretical climate matches shown (no historical records for these in state).")
+
+    if meta.get("no_verified_crops"):
+        st.warning("⚠️ None of the model's candidate crops could be confirmed as commercially grown in this state from government production records. Results below are the raw model output, unverified against real-world cultivation data — treat with caution.")
+    if meta.get("suppressed"):
+        st.caption(f"ℹ️ Note: the model's single highest statistical match was **{meta['raw_top_crop']}** ({meta['raw_top_conf']}% confidence), but it does not appear in government production records for {sel_state} and was excluded from the ranked list below.")
+
     st.subheader("🏆 Recommendations")
-    st.dataframe(res[["crop", "classifier_confidence", "estimated_yield_t_ha", "irrigation_needed_mm", "estimated_profit_inr_ha", "xai_explanation"]], use_container_width=True, hide_index=True)
+    display_cols = ["crop", "classifier_confidence", "estimated_yield_t_ha", "irrigation_needed_mm", "estimated_profit_inr_ha", "growth_status", "data_confidence", "xai_explanation"]
+    st.dataframe(res[display_cols], use_container_width=True, hide_index=True)
     st.success(f"**Top Pick: {res.iloc[0]['crop'].title()}** — {res.iloc[0]['xai_explanation']}")
 else:
     st.info("👈 Set your farm's details in the sidebar, then click **Get Crop Recommendations**.")
