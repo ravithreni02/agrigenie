@@ -234,7 +234,9 @@ def multi_objective_recommend(state, district, N=None, P=None, K=None, ph=None, 
     res["s_conf"] = res["classifier_confidence"] / 100.0
     res["s_yield"] = (res["estimated_yield_t_ha"] - bench_df["avg_yield_t_ha"].min()) / (bench_df["avg_yield_t_ha"].max() - bench_df["avg_yield_t_ha"].min())
     res["s_water"] = 1 - (res["irrigation_needed_mm"] / bench_df["water_req_mm"].max())
-    res["s_profit"] = np.log1p(res["estimated_profit_inr_ha"].clip(lower=0)) / np.log1p((bench_df["avg_yield_t_ha"] * 1000 * bench_df["price_per_kg_inr"]).max())
+    min_profit = (bench_df["avg_yield_t_ha"] * 1000 * bench_df["price_per_kg_inr"] - bench_df["cost_cultivation_inr_ha"]).min()
+    max_profit = (bench_df["avg_yield_t_ha"] * 1000 * bench_df["price_per_kg_inr"] - bench_df["cost_cultivation_inr_ha"]).max()
+    res["s_profit"] = (res["estimated_profit_inr_ha"] - min_profit) / (max_profit - min_profit)
     if clim["risk"] != "low": res["s_water"] *= (0.7 if clim["risk"] == "moderate" else 0.4)
     res["multi_objective_score"] = (w_c * res["s_conf"] + w_y * res["s_yield"] + w_wa * res["s_water"] + w_p * res["s_profit"]).round(4)
 
