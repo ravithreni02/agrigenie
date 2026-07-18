@@ -57,17 +57,38 @@ CROP_TO_APY_NAME = {
     "mungbean": "Moong(Green Gram)", "blackgram": "Urad", "lentil": "Masoor",
     "banana": "Banana", "coconut": "Coconut", "cotton": "Cotton(lint)",
     "jute": "Jute",
-    # newly verified against the district-level dataset + state horticulture data:
     "apple": "Apple", "mango": "Mango", "grapes": "Grapes",
     "orange": "Orange", "papaya": "Papaya", "pomegranate": "Pomegranate",
 }
 
-# coffee, kidneybeans, muskmelon, watermelon genuinely still have no reliable
-# state-level production record in either source, so they stay honest ("unverifiable")
-NO_REGIONAL_DATA = {
-    "coffee", "kidneybeans", "muskmelon", "watermelon",
+# Horticulture Statistics Division, DAC&FW (2019-20) -- states with Production > 0
+WATERMELON_STATES = {
+    "UTTAR PRADESH", "ANDHRA PRADESH", "TAMIL NADU", "MADHYA PRADESH", "KARNATAKA",
+    "ODISHA", "WEST BENGAL", "TELANGANA", "HARYANA", "MAHARASHTRA",
+    "CHHATTISGARH", "BIHAR", "RAJASTHAN", "PUNJAB", "TRIPURA",
 }
 
+# Coffee Board of India (2025-26 Final Estimate) + coffee export industry sourcing data
+COFFEE_STATES = {
+    "KARNATAKA", "KERALA", "TAMIL NADU", "ANDHRA PRADESH", "ODISHA",
+    "ASSAM", "MEGHALAYA", "MANIPUR", "MIZORAM", "NAGALAND",
+}
+
+# ICAR-Indian Institute of Pulses Research, Kanpur (Agri Journal World, 2023)
+KIDNEYBEANS_STATES = {
+    "MAHARASHTRA", "KARNATAKA", "TAMIL NADU", "KERALA", "HIMACHAL PRADESH",
+    "UTTARAKHAND", "JAMMU AND KASHMIR", "GUJARAT", "WEST BENGAL",
+}
+
+# 2023-24 production data (Horticulture Dept-sourced reporting, cross-confirmed
+# across DesiKheti/BigHaat/India Inputs)
+MUSKMELON_STATES = {
+    "UTTAR PRADESH", "ANDHRA PRADESH", "MADHYA PRADESH", "PUNJAB", "HARYANA",
+    "CHHATTISGARH", "TAMIL NADU", "MAHARASHTRA", "TELANGANA", "RAJASTHAN",
+}
+
+# nothing left with zero data now -- all 22 model crops have some verification source
+NO_REGIONAL_DATA = set()
 @st.cache_resource
 def load_agri_assets():
     model = joblib.load("best_model_RandomForest.joblib")
@@ -144,19 +165,20 @@ def clip_to_training_range(feature_name, value):
     return float(np.clip(value, lo, hi))
 
 def check_regional_growth(state, crop_label):
-    """
-    Returns one of: "grown", "not_grown", "unverifiable".
-    FIX #3: no more '.replace(" AND "," & ")' or 'ODISHA'->'ORISSA' hacks --
-    those were silently breaking the match for Jammu and Kashmir AND Odisha
-    (the real dataset already spells them "Jammu and Kashmir" / "Odisha").
-    Verified directly against India_Agriculture_Crop_Production.csv.
-    """
     if crop_label in NO_REGIONAL_DATA:
         return "unverifiable"
+    lookup_state = state.upper().strip()
+    special_lists = {
+        "watermelon": WATERMELON_STATES,
+        "coffee": COFFEE_STATES,
+        "kidneybeans": KIDNEYBEANS_STATES,
+        "muskmelon": MUSKMELON_STATES,
+    }
+    if crop_label in special_lists:
+        return "grown" if lookup_state in special_lists[crop_label] else "not_grown"
     apy_name = CROP_TO_APY_NAME.get(crop_label)
     if apy_name is None:
         return "unverifiable"
-    lookup_state = state.upper().strip()
     return "grown" if (lookup_state, apy_name) in grown_in_state else "not_grown"
 
 def multi_objective_recommend(state, district, N=None, P=None, K=None, ph=None, top_n=5, w_confidence=0.5, w_yield=0.05, w_water=0.4, w_profit=0.05):
@@ -186,7 +208,7 @@ def multi_objective_recommend(state, district, N=None, P=None, K=None, ph=None, 
     for c, cf in zip(cands, confs):
         b_rows = bench_df[(bench_df["label"] == c) & ((bench_df["state"] == state) | bench_df["state"].isna())]
         # prefer the state-specific row if present, else the national-fallback row for this crop
-        b_row = b_rows[b_rows["state"] == state]
+        b_row = b_rows[b_rows["state"].str.strip().str.lower() == state.strip().lower()]
         b_row = b_row.iloc[0] if not b_row.empty else bench_df[bench_df["label"] == c].iloc[0]
 
         yf = np.clip(1.1 - (abs(clim["temperature"] - b_row["ideal_temp_c"]) / max(b_row["ideal_temp_c"], 1) + abs(clim["rainfall_37d_actual"] - b_row["ideal_rainfall_mm"]) / max(b_row["ideal_rainfall_mm"], 1)) / 2.0, 0.6, 1.1)
