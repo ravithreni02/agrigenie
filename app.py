@@ -210,17 +210,17 @@ def multi_objective_recommend(state, district, N=None, P=None, K=None, ph=None, 
         # prefer the state-specific row if present, else the national-fallback row for this crop
         b_row = b_rows[b_rows["state"].str.strip().str.lower() == state.strip().lower()]
         b_row = b_row.iloc[0] if not b_row.empty else bench_df[bench_df["label"] == c].iloc[0]
+        # crop_yield.csv reports coconut in nuts/hectare, not tonnes/hectare like every
+        # other crop in that file -- using it as-is inflates profit by ~1000x. Convert
+        # using a standard ~1.2 kg average nut weight (0.0012 t/nut) to get a real t/ha figure.
+        if c == "coconut" and str(b_row.get("yield_source", "")).startswith("state"):
+            b_row = b_row.copy()
+            b_row["avg_yield_t_ha"] = b_row["avg_yield_t_ha"] * 0.0012
 
         yf = np.clip(1.1 - (abs(clim["temperature"] - b_row["ideal_temp_c"]) / max(b_row["ideal_temp_c"], 1) + abs(clim["rainfall_37d_actual"] - b_row["ideal_rainfall_mm"]) / max(b_row["ideal_rainfall_mm"], 1)) / 2.0, 0.6, 1.1)
         est_y = b_row["avg_yield_t_ha"] * yf
         irr = max(b_row["water_req_mm"] - clim["rainfall_37d_actual"], 0)
         prof = (est_y * 1000 * b_row["price_per_kg_inr"]) - b_row["cost_cultivation_inr_ha"]
-        # crop_yield.csv reports coconut in nuts/hectare, not tonnes/hectare like every
-        # other crop in that file -- using it as-is inflates profit by ~1000x. Convert
-        # using a standard ~1.2 kg average nut weight (0.0012 t/nut) to get a real t/ha figure.
-        if label == "coconut" and row.get("yield_source", "").startswith("state"):
-            row["avg_yield_t_ha"] = row["avg_yield_t_ha"] * 0.0012
-            row["yield_source"] += " [converted from nuts/ha]"
         s_row = get_shap(le.transform([c])[0]); d_idx = int(np.argmax(np.abs(s_row))); d_feat = FEATURES[d_idx]
         expl = SHAP_NARRATIVE_RULES[d_feat]["positive" if s_row[d_idx] >= 0 else "negative"]
         growth_status = check_regional_growth(state, c)
