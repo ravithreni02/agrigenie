@@ -217,7 +217,7 @@ def multi_objective_recommend(state, district, N=None, P=None, K=None, ph=None, 
             b_row = b_row.copy()
             b_row["avg_yield_t_ha"] = b_row["avg_yield_t_ha"] * 0.0012
 
-        yf = np.clip(1.1 - (abs(clim["temperature"] - b_row["ideal_temp_c"]) / max(b_row["ideal_temp_c"], 1) + abs(clim["rainfall_37d_actual"] - b_row["ideal_rainfall_mm"]) / max(b_row["ideal_rainfall_mm"], 1)) / 2.0, 0.6, 1.1)
+        yf = np.clip(1.15 - (abs(clim["temperature"] - b_row["ideal_temp_c"]) / max(b_row["ideal_temp_c"], 1) + abs(clim["rainfall_37d_actual"] - b_row["ideal_rainfall_mm"]) / max(b_row["ideal_rainfall_mm"], 1)) / 4.0, 0.4, 1.15)
         est_y = b_row["avg_yield_t_ha"] * yf
         irr = max(b_row["water_req_mm"] - clim["rainfall_37d_actual"], 0)
         prof = (est_y * 1000 * b_row["price_per_kg_inr"]) - b_row["cost_cultivation_inr_ha"]
