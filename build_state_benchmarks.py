@@ -1,39 +1,11 @@
 """
 build_state_benchmarks.py
 ==========================
-Regenerates crop_benchmarks_STATE.csv (one row per crop label x state) from
-the raw source datasets, with full source citations per cell.
 
-IMPORTANT HONESTY NOTE (read this before trusting the output blindly):
-The original script that produced your current crop_benchmarks_STATE.csv was
-never saved to GitHub or found in your notebook -- only the *output* file
-survived. This script is a fresh rebuild that reproduces the same general
-method (visible in your notebook's crop_benchmarks_MASTER.csv pipeline, cells
-47-76, extended to per-state granularity), inferred from matching the values
-already in your current table. It is NOT guaranteed to be byte-for-byte
-identical to your old file -- spot check a handful of rows against
-crop_benchmarks_STATE.csv before you trust it wholesale, and adjust the
-SEASON_PREFERENCE / YEAR selection logic below if your numbers diverge.
-
-Inputs expected in the working directory:
-    crop_yield.csv                       -> state-level yield (real)
-    Cost_of_Cultivation_Sample_Data.csv   -> state-level cost, CACP microdata (real)
-    crop_price_data.csv                  -> national price (real, no state split)
-    data_set.csv                         -> used to check regionally_verifiable
-                                             (must have State/Crop/Area/Production columns,
-                                             or State_Name -- adjust COLUMN NAMES below)
-
-Output:
-    crop_benchmarks_STATE.csv
-"""
 
 import pandas as pd
 import numpy as np
 
-# ---------------------------------------------------------------------------
-# 0. Crop label -> source-file crop name mappings
-#    (label is the lowercase name your ML model uses everywhere else)
-# ---------------------------------------------------------------------------
 
 YIELD_NAME_MAP = {           # label -> name used in crop_yield.csv "Crop" column
     "rice": "Rice", "maize": "Maize", "chickpea": "Gram",
@@ -63,22 +35,13 @@ PRICE_NAME_MAP = {           # label -> "Commodity" in crop_price_data.csv
     # kidneybeans / mothbeans genuinely have no reliable national price series here
 }
 
-# --- Manual overrides for crops the raw datasets get wrong or don't cover ---
-# Tender Coconut market price != dry/mature coconut (copra) price. No dry-coconut
-# price exists in the provided data, so use a documented average market rate
-# (~Rs 25-30/kg per typical APMC/Agmarknet dry coconut listings) instead of
-# silently using the wrong product's price.
+
 COCONUT_DRY_PRICE_INR_KG = 28.0
 
-# crop_yield.csv reports coconut yield in NUTS/ha, not tonnes/ha (mean ~8,650 --
-# physically impossible as tonnes). Convert using ~0.0012 t per nut (standard
-# average dry coconut weight ~1.2 kg each) instead of discarding real state
-# variation entirely.
+
 COCONUT_YIELD_NUTS_TO_TONNES = 0.0012
 
-# Cost_of_Cultivation_Sample_Data.csv has no horticulture crops at all (no
-# banana/watermelon/muskmelon rows exist), so cost for these comes from a
-# separate documented horticulture cost estimate, not CACP.
+
 HORTICULTURE_COST_INR_HA = {
     "banana": 56000,
     "watermelon": 50000,
@@ -86,13 +49,7 @@ HORTICULTURE_COST_INR_HA = {
     "coconut": 60000,   # CACP has no coconut rows either; documented plantation-cost estimate
 }
 
-# --- Universal fallback so NO crop is ever left blank ---
-# These are the original baseline estimates (used across your whole project since
-# day one) for crops that have no real state-level OR national dataset covering
-# them at all: apple, orange, grapes, mango, papaya, pomegranate, coffee,
-# kidneybeans, watermelon, muskmelon cost/yield gaps. Real sourced data (crop_yield.csv,
-# CACP, horticulture overrides above) always takes priority over these when it exists --
-# this table only fills in what's left over.
+
 NATIONAL_PLACEHOLDER = {
     # label:        (yield_t_ha, cost_inr_ha, price_inr_kg)
     "rice":        (4.0,  45000, 20),
@@ -119,9 +76,7 @@ NATIONAL_PLACEHOLDER = {
     "coffee":      (1.0,  100000, 250),
 }
 
-# Better-than-placeholder real yield figures for fruit crops (Indian Horticulture
-# Database / National Horticulture Board, 2014-15) -- state-level crop_yield.csv
-# has no fruit crops at all, so this is the best real source available.
+
 FRUIT_YIELD_OVERRIDE_T_HA = {
     "apple": 6.01,
     "orange": 12.72,   # sourced from broader "Citrus" category -- disclose in paper
@@ -139,9 +94,7 @@ ALL_LABELS = [
     "coconut", "cotton", "jute", "coffee",
 ]
 
-# Crop-level constants (not state-varying) -- carry over from your existing
-# crop_benchmarks_MASTER.csv if you have it; otherwise these placeholders keep
-# the pipeline runnable. REPLACE with your real MASTER values if available.
+
 CROP_CONSTANTS = {
     "rice":        {"water_req_mm": 382.9, "ideal_temp_c": 25, "ideal_rainfall_mm": 200},
     "maize":       {"water_req_mm": 500,   "ideal_temp_c": 24, "ideal_rainfall_mm": 90},
